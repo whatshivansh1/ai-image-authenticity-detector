@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: ai-image-detector-backend
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    healthCheckPath: /health

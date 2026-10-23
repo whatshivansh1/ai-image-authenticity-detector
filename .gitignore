@@ -1,0 +1,20 @@
+# Python virtual environments & bytecode
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary binaries & logs
+bin/
+*.log
+.system_generated/
+scratch/
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/dist/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
