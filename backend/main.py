@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from PIL import ExifTags, Image, ImageOps, UnidentifiedImageError
 from torchvision import models, transforms
-
+import os
 ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = ROOT / "models" / "ai_image_detector.pth"
 SAMPLES_DIR = ROOT / "backend" / "samples"
@@ -54,6 +54,21 @@ def load_model():
     m.classifier[3] = nn.Linear(m.classifier[3].in_features, 2)
     m.load_state_dict(checkpoint["model_state_dict"])
     m.eval()
+
+    # Set optimal thread count for CPU
+    torch.set_num_threads(os.cpu_count() or 1)
+
+    # Apply dynamic quantization for faster CPU inference
+    try:
+        m = torch.quantization.quantize_dynamic(m, {nn.Linear}, dtype=torch.qint8)
+    except Exception:
+        pass
+
+    # Compile the model (PyTorch 2.x) for additional speedup
+    try:
+        m = torch.compile(m)
+    except Exception:
+        pass
 
     # Pre-warm model to eliminate cold-start latency on first user query
     with torch.inference_mode():
@@ -128,28 +143,26 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
     }
 
 
-def compute_spectral_analysis(image: Image.Image):
-    """Fast 2D Fast Fourier Transform (FFT) to detect periodic high-frequency generator artifacts."""
+    # Resize to smaller 128x128 for faster FFT while preserving enough detail
     gray = np.array(
-        image.convert("L").resize((256, 256), Image.Resampling.BILINEAR),
+        image.convert("L").resize((128, 128), Image.Resampling.BILINEAR),
         dtype=np.float32,
     )
     f = np.fft.fft2(gray)
     fshift = np.fft.fftshift(f)
     magnitude = np.abs(fshift)
 
-    center = 128
-    y, x = np.ogrid[:256, :256]
+    center = 64
+    y, x = np.ogrid[:128, :128]
     dist = np.sqrt((x - center) ** 2 + (y - center) ** 2)
 
-    low_mask = dist <= 32
-    high_mask = (dist > 32) & (dist <= 110)
+    low_mask = dist <= 16
+    high_mask = (dist > 16) & (dist <= 55)
 
     low_energy = float(magnitude[low_mask].mean())
     high_energy = float(magnitude[high_mask].mean())
     ratio = float(high_energy / (low_energy + 1e-6))
 
-    # Variance in high frequencies: periodic grid peaks from transposed conv / VAE upsamplers
     std_high = float(magnitude[high_mask].std() / (high_energy + 1e-6))
 
     is_anomaly = bool(std_high > 1.85 or ratio > 0.12)
