@@ -1,5 +1,8 @@
+import asyncio
+import functools
 import io
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +33,9 @@ app.add_middleware(
 
 device = torch.device("cpu")
 
+# Thread pool for CPU-bound inference — keeps the async event loop responsive
+_executor = ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) // 2))
+
 preprocess = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -58,22 +64,20 @@ def load_model():
     # Set optimal thread count for CPU
     torch.set_num_threads(os.cpu_count() or 1)
 
-    # Apply dynamic quantization for faster CPU inference
-    try:
-        m = torch.quantization.quantize_dynamic(m, {nn.Linear}, dtype=torch.qint8)
-    except Exception:
-        pass
+    # NOTE: torch.compile() removed — it is the primary cause of the 6-7 s
+    # latency. On CPU it triggers Triton/inductor JIT recompilation on the
+    # first *real* image (different graph paths than the zero-tensor warmup),
+    # stalling the request for several seconds. MobileNetV3 on CPU is already
+    # fast (~200-400 ms) without it.
 
-    # Compile the model (PyTorch 2.x) for additional speedup
-    try:
-        m = torch.compile(m)
-    except Exception:
-        pass
+    # NOTE: quantize_dynamic removed — it only helps nn.Linear layers and
+    # adds net overhead to the conv-heavy MobileNetV3 backbone.
 
-    # Pre-warm model to eliminate cold-start latency on first user query
+    # Pre-warm 3x to fill CPU caches and eliminate first-request cold-start.
     with torch.inference_mode():
-        dummy_input = torch.zeros(1, 3, 224, 224)
-        m(dummy_input)
+        for _ in range(3):
+            dummy = torch.zeros(1, 3, 224, 224)
+            m(dummy)
 
     return m
 
@@ -143,6 +147,9 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
     }
 
 
+
+def compute_spectral_analysis(image: Image.Image):
+    """2D FFT spectral analysis — detects periodic high-freq artifacts from diffusion/GAN upsampling."""
     # Resize to smaller 128x128 for faster FFT while preserving enough detail
     gray = np.array(
         image.convert("L").resize((128, 128), Image.Resampling.BILINEAR),
@@ -171,6 +178,14 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
         "high_freq_std": round(std_high, 4),
         "spectral_anomaly": is_anomaly,
     }
+
+
+def _run_inference(tensor: torch.Tensor):
+    """Blocking inference helper — runs in thread pool to avoid blocking the event loop."""
+    with torch.inference_mode():
+        logits = model(tensor)[0]
+        probabilities = torch.softmax(logits, dim=0)
+    return float(probabilities[0].item()), float(probabilities[1].item())
 
 
 @app.get("/health")
@@ -240,14 +255,13 @@ async def predict(file: UploadFile = File(...)):
     # 4. Spectral 2D FFT Analysis
     spectral = compute_spectral_analysis(image)
 
-    # 5. Deep Learning Model Inference (MobileNetV3-Large)
+    # 5. Deep Learning Model Inference (MobileNetV3-Large) — offloaded to thread
+    #    pool so the async event loop is not blocked during CPU-bound inference
     tensor = preprocess(image).unsqueeze(0)
-    with torch.inference_mode():
-        logits = model(tensor)[0]
-        probabilities = torch.softmax(logits, dim=0)
-
-    ai_prob = float(probabilities[0].item())
-    real_prob = float(probabilities[1].item())
+    loop = asyncio.get_event_loop()
+    ai_prob, real_prob = await loop.run_in_executor(
+        _executor, functools.partial(_run_inference, tensor)
+    )
 
     # 6. Multi-Signal Synthesis
     # Priority A: Definitive generative AI prompt/metadata signatures
