@@ -33,8 +33,8 @@ app.add_middleware(
 
 device = torch.device("cpu")
 
-# Thread pool for CPU-bound inference — keeps the async event loop responsive
-_executor = ThreadPoolExecutor(max_workers=max(1, (os.cpu_count() or 2) // 2))
+# Thread pool for CPU-bound inference — capped at 2 workers to avoid context-switch overhead
+_executor = ThreadPoolExecutor(max_workers=2)
 
 preprocess = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -61,8 +61,10 @@ def load_model():
     m.load_state_dict(checkpoint["model_state_dict"])
     m.eval()
 
-    # Set optimal thread count for CPU
-    torch.set_num_threads(os.cpu_count() or 1)
+    # Limit thread count to 1 or 2. On cloud hosts (Docker on Render), os.cpu_count()
+    # returns the host's 32-64 cores despite a 0.1-0.5 vCPU quota, which previously
+    # spawned 64 threads and caused 3.8s of OpenMP context-switch thrashing.
+    torch.set_num_threads(min(2, max(1, (os.cpu_count() or 1))))
 
     # NOTE: torch.compile() removed — it is the primary cause of the 6-7 s
     # latency. On CPU it triggers Triton/inductor JIT recompilation on the
