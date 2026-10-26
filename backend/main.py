@@ -242,10 +242,23 @@ async def predict(file: UploadFile = File(...)):
             # 2. Transpose according to EXIF orientation tag (e.g. smartphone camera)
             transposed = ImageOps.exif_transpose(source)
 
+            # Fast downscale if image is large (> 1024px on longest edge).
+            # MobileNetV3 requires 224x224 and 2D FFT needs 128x128.
+            # Downscaling first avoids multi-megapixel RGBA allocation and CPU throttling on cloud instances.
+            w, h = transposed.size
+            max_dim = max(w, h)
+            if max_dim > 1024:
+                scale = 1024.0 / max_dim
+                transposed = transposed.resize(
+                    (int(w * scale), int(h * scale)),
+                    Image.Resampling.BILINEAR
+                )
+
             # 3. Safe conversion handling alpha / transparency
             if transposed.mode in ("RGBA", "LA") or (transposed.mode == "P" and "transparency" in transposed.info):
-                canvas = Image.new("RGB", transposed.size, (255, 255, 255))
-                canvas.paste(transposed, mask=transposed.convert("RGBA").split()[3])
+                rgba = transposed.convert("RGBA")
+                canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+                canvas.paste(rgba, mask=rgba.split()[3])
                 image = canvas
             else:
                 image = transposed.convert("RGB")

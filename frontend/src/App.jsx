@@ -15,6 +15,9 @@ export default function App() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loadingSeconds, setLoadingSeconds] = useState(0)
+  const [roundtripMs, setRoundtripMs] = useState(null)
+  const [serverStatus, setServerStatus] = useState('checking') // 'checking' | 'online' | 'waking' | 'offline'
   const [cameraOpen, setCameraOpen] = useState(false)
   const [cameraError, setCameraError] = useState('')
   const [samples, setSamples] = useState([])
@@ -25,13 +28,58 @@ export default function App() {
   const videoRef = useRef(null)
   const streamRef = useRef(null)
 
-  // Load sample images list on mount
+  // Server health check & keep-alive (keeps free-tier cloud containers warm)
   useEffect(() => {
+    let active = true
+
+    async function pingHealth() {
+      try {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 4000)
+        )
+        const fetchPromise = fetch(`${API_URL}/health`)
+        const res = await Promise.race([fetchPromise, timeoutPromise])
+
+        if (res.ok && active) {
+          setServerStatus('online')
+        } else if (active) {
+          setServerStatus('waking')
+        }
+      } catch {
+        if (active) {
+          setServerStatus(prev => (prev === 'online' ? 'online' : 'waking'))
+        }
+      }
+    }
+
+    pingHealth()
+
+    // Keep-alive ping every 3 minutes to prevent Render free-tier spin down while tab is open
+    const keepAliveTimer = setInterval(pingHealth, 3 * 60 * 1000)
+
+    // Load sample images list
     fetch(`${API_URL}/samples`)
-      .then(res => res.ok ? res.json() : [])
-      .then(data => setSamples(data))
-      .catch(() => setSamples([]))
+      .then(res => (res.ok ? res.json() : []))
+      .then(data => {
+        if (active) setSamples(data)
+      })
+      .catch(() => {})
+
+    return () => {
+      active = false
+      clearInterval(keepAliveTimer)
+    }
   }, [])
+
+  // Elapsed timer while analysis is in progress
+  useEffect(() => {
+    let timer
+    if (loading) {
+      setLoadingSeconds(0)
+      timer = setInterval(() => setLoadingSeconds(s => s + 1), 1000)
+    }
+    return () => clearInterval(timer)
+  }, [loading])
 
   // Clipboard paste support
   useEffect(() => {
@@ -99,6 +147,8 @@ export default function App() {
     setLoading(true)
     setError('')
     setResult(null)
+    setRoundtripMs(null)
+    const startTime = performance.now()
     const body = new FormData()
     body.append('file', target)
     try {
@@ -108,11 +158,13 @@ export default function App() {
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail || 'Prediction failed.')
+      setRoundtripMs(Math.round(performance.now() - startTime))
+      setServerStatus('online')
       setResult(data)
     } catch (err) {
       setError(
         err.message === 'Failed to fetch'
-          ? 'Cannot reach the local backend. Ensure FastAPI is running on port 8000.'
+          ? 'Cannot reach the backend. If hosted on a free cloud tier, the server may still be spinning up. Please retry in 10-15 seconds.'
           : err.message
       )
     } finally {
@@ -240,7 +292,22 @@ export default function App() {
           <span className="brand-icon"><ScanSearch size={22} /></span>
           <span>VERITY<span className="brand-dot">.</span></span>
         </a>
-        <div className="top-status"><span /> MULTI-SIGNAL FORENSIC ENGINE</div>
+        <div className="top-status">
+          <span
+            className={
+              serverStatus === 'online'
+                ? 'status-dot-online'
+                : serverStatus === 'waking'
+                ? 'status-dot-waking'
+                : 'status-dot-offline'
+            }
+          />
+          {serverStatus === 'online'
+            ? 'BACKEND ACTIVE (<300MS)'
+            : serverStatus === 'waking'
+            ? 'CONNECTING / WAKING CLOUD CONTAINER...'
+            : 'MULTI-SIGNAL FORENSIC ENGINE'}
+        </div>
       </header>
 
       <section className="hero">
@@ -376,8 +443,16 @@ export default function App() {
           {loading && (
             <div className="loading-result">
               <LoaderCircle className="spin large-spin" size={42} />
-              <h3>Analyzing forensic signals</h3>
+              <h3>Analyzing forensic signals ({loadingSeconds}s)</h3>
               <p>Evaluating spatial diffusion textures, spectral upsampling harmonics, and camera sensor headers...</p>
+              {loadingSeconds >= 3 && (
+                <div className="cold-start-advisory">
+                  <Clock3 size={15} />
+                  <span>
+                    Initial startup notice: Free-tier cloud instances (Render) take 10–15s to wake from sleep. Subsequent analyses take &lt; 300ms.
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -477,6 +552,9 @@ export default function App() {
                 <div>
                   <span><Clock3 size={15} /> PROCESSING TIME</span>
                   <strong>{result.processing_time_ms} ms</strong>
+                  {roundtripMs && (
+                    <div className="roundtrip-metric">Network: {roundtripMs} ms</div>
+                  )}
                 </div>
                 <div>
                   <span><Layers size={15} /> ARCHITECTURE</span>

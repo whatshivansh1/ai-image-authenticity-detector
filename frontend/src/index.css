@@ -281,3 +281,52 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   background: #382023;
   border-color: #7d3b40;
 }
+
+/* Server Status & Latency Badges */
+.status-dot-online {
+  background: #4ade80 !important;
+  box-shadow: 0 0 10px #4ade80aa !important;
+}
+.status-dot-waking {
+  background: #fbbf24 !important;
+  box-shadow: 0 0 10px #fbbf24aa !important;
+  animation: pulse-dot 1.5s infinite ease-in-out;
+}
+.status-dot-offline {
+  background: #f87171 !important;
+  box-shadow: 0 0 10px #f87171aa !important;
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+}
+
+.cold-start-advisory {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: #19160d;
+  border: 1px solid #3d351b;
+  border-radius: 7px;
+  font-size: 11px;
+  color: #fbbf24;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.45;
+}
+.cold-start-advisory svg {
+  flex-shrink: 0;
+}
+
+.roundtrip-metric {
+  font-size: 10px;
+  color: #a0a2b0;
+  margin-top: 4px;
+}
