@@ -92,16 +92,23 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
     ai_signatures = []
     camera_data = {}
 
+    ai_indicators = [
+        "prompt", "negative prompt", "stable diffusion", "midjourney",
+        "dall-e", "dall·e", "dalle", "comfyui", "novelai", "automatic1111",
+        "c2pa", "civitai", "generation parameter", "steps:", "sampler:",
+        "flux.1", "flux", "black forest labs", "firefly", "adobe firefly",
+        "ideogram", "runway", "pika", "sora", "leonardo.ai", "leonardo ai",
+        "recraft", "playground", "kandinsky", "foocus", "invokeai",
+        "sd-metadata", "stability ai", "dreamstudio", "dreamfusion",
+        "deepfloyd", "genai", "generative ai"
+    ]
+
     # 1. Text chunks in PNG / JPEG headers (e.g. prompt, negative prompt, A1111/ComfyUI parameters)
     if hasattr(source, "info") and source.info:
         for k, v in source.info.items():
             k_lower = str(k).lower()
             v_str = str(v).lower() if isinstance(v, (str, bytes)) else ""
-            for indicator in [
-                "prompt", "negative prompt", "stable diffusion", "midjourney",
-                "dall-e", "comfyui", "novelai", "automatic1111", "c2pa",
-                "civitai", "generation parameter", "steps:", "sampler:"
-            ]:
+            for indicator in ai_indicators:
                 if indicator in k_lower or indicator in v_str:
                     clean_val = str(v)[:80] + ("..." if len(str(v)) > 80 else "")
                     ai_signatures.append(f"{k}: {clean_val}")
@@ -114,20 +121,20 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
             for tag_id, value in exif.items():
                 tag = ExifTags.TAGS.get(tag_id, str(tag_id))
                 val_str = str(value).strip()
+                val_lower = val_str.lower()
                 if tag in ["Make", "Model", "LensModel", "ExposureTime", "FNumber", "ISOSpeedRatings", "DateTimeOriginal"]:
                     camera_data[tag] = val_str
-                elif tag == "Software":
-                    s_lower = val_str.lower()
-                    if any(x in s_lower for x in ["stable diffusion", "midjourney", "dall-e", "adobe firefly", "comfyui"]):
-                        ai_signatures.append(f"Software signature: {val_str}")
+                elif tag in ["Software", "ImageDescription", "UserComment", "XPComment"]:
+                    if any(x in val_lower for x in ai_indicators):
+                        ai_signatures.append(f"{tag} signature: {val_str[:80]}")
                     else:
-                        camera_data["Software"] = val_str
+                        camera_data[tag] = val_str
     except Exception:
         pass
 
     # 3. Fast binary byte scan for known C2PA / generator chunks
-    raw_lower = raw_bytes[:16384].lower() + raw_bytes[-8192:].lower()
-    for bin_sig in [b"c2pa", b"sd-metadata", b"stability ai", b"dreamstudio", b"invokeai"]:
+    raw_lower = raw_bytes[:32768].lower() + raw_bytes[-16384:].lower()
+    for bin_sig in [b"c2pa", b"sd-metadata", b"stability ai", b"dreamstudio", b"invokeai", b"midjourney", b"dall-e", b"flux.1", b"comfyui"]:
         if bin_sig in raw_lower:
             sig_name = bin_sig.decode("ascii", errors="ignore")
             if not any(sig_name in s.lower() for s in ai_signatures):
@@ -149,14 +156,19 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
     }
 
 
-
 def compute_spectral_analysis(image: Image.Image):
-    """2D FFT spectral analysis — detects periodic high-freq artifacts from diffusion/GAN upsampling."""
-    # Resize to smaller 128x128 for faster FFT while preserving enough detail
+    """
+    2D FFT spectral analysis:
+    Natural photographs follow a power-law distribution where radial energy decreases smoothly (P(f) ~ 1/f^alpha).
+    Generative models (GANs, Latent Diffusion upsampling/strided convs) produce periodic grid spikes or
+    abnormal axis-aligned energy concentrations that deviate from the smooth radial decay.
+    """
     gray = np.array(
         image.convert("L").resize((128, 128), Image.Resampling.BILINEAR),
         dtype=np.float32,
     )
+    gray -= gray.mean()
+
     f = np.fft.fft2(gray)
     fshift = np.fft.fftshift(f)
     magnitude = np.abs(fshift)
@@ -165,19 +177,31 @@ def compute_spectral_analysis(image: Image.Image):
     y, x = np.ogrid[:128, :128]
     dist = np.sqrt((x - center) ** 2 + (y - center) ** 2)
 
-    low_mask = dist <= 16
-    high_mask = (dist > 16) & (dist <= 55)
+    # Cross-axis peak detection (GAN / Diffusion transposed conv grid artifacts)
+    cardinal_mask = ((np.abs(x - center) <= 2) | (np.abs(y - center) <= 2)) & (dist > 8) & (dist <= 56)
+    diagonal_mask = (dist > 8) & (dist <= 56) & (~cardinal_mask)
+
+    cardinal_mean = float(magnitude[cardinal_mask].mean()) if cardinal_mask.any() else 0.0
+    diagonal_mean = float(magnitude[diagonal_mask].mean()) if diagonal_mask.any() else 1.0
+    axis_ratio = float(cardinal_mean / (diagonal_mean + 1e-6))
+
+    low_mask = dist <= 14
+    high_mask = (dist > 18) & (dist <= 56)
 
     low_energy = float(magnitude[low_mask].mean())
     high_energy = float(magnitude[high_mask].mean())
-    ratio = float(high_energy / (low_energy + 1e-6))
+    energy_ratio = float(high_energy / (low_energy + 1e-6))
 
-    std_high = float(magnitude[high_mask].std() / (high_energy + 1e-6))
+    high_vals = magnitude[high_mask]
+    peak_to_mean = float(high_vals.max() / (high_vals.mean() + 1e-6)) if len(high_vals) > 0 else 0.0
 
-    is_anomaly = bool(std_high > 1.85 or ratio > 0.12)
+    # Periodic grid spikes manifest as high axis_ratio (> 1.85) or sharp peak-to-mean (> 14.0)
+    is_anomaly = bool(axis_ratio > 1.85 or peak_to_mean > 16.0 or (energy_ratio > 0.16 and peak_to_mean > 10.0))
+
     return {
-        "high_freq_ratio": round(ratio, 4),
-        "high_freq_std": round(std_high, 4),
+        "high_freq_ratio": round(energy_ratio, 4),
+        "axis_grid_ratio": round(axis_ratio, 4),
+        "peak_to_mean": round(peak_to_mean, 2),
         "spectral_anomaly": is_anomaly,
     }
 
@@ -279,35 +303,36 @@ async def predict(file: UploadFile = File(...)):
     )
 
     # 6. Multi-Signal Synthesis
-    # Priority A: Definitive generative AI prompt/metadata signatures
+    # Priority A: Definitive generative AI prompt/metadata/C2PA signatures
     if metadata["has_ai_metadata"]:
         label = "AI-Generated"
         confidence = 99.85
         reason = f"Direct generative AI metadata signature identified: {metadata['ai_signatures'][0]}"
 
-    # Priority B: Authentic hardware camera EXIF verified
-    elif metadata["has_camera_hardware"]:
+    # Priority B: Verified hardware camera EXIF with valid optical capture parameters
+    # and no contradictory AI indicators or strong spectral anomalies
+    elif metadata["has_camera_hardware"] and not spectral["spectral_anomaly"] and ai_prob < 0.70:
         label = "Authentic"
         cam = metadata["camera_device"] or "Hardware camera"
-        confidence = round(max(94.0, min(99.4, 95.0 + len(metadata["camera_details"]) * 0.8)), 2)
+        confidence = round(max(92.0, min(99.4, 94.0 + len(metadata["camera_details"]) * 0.8)), 2)
         reason = f"Verified camera hardware capture metadata ({cam})."
 
-    # Priority C: Spectral & Neural Network synthesis (e.g. web images, uncompressed crops)
+    # Priority C: High-frequency periodic spectral anomaly (grid upsampling)
+    elif spectral["spectral_anomaly"]:
+        label = "AI-Generated"
+        confidence = round(max(85.0, min(98.5, 88.0 + (spectral.get("peak_to_mean", 12.0) - 10.0) * 1.5)), 2)
+        reason = "High-frequency periodic spectral artifacts detected (typical of diffusion/GAN upsampling)."
+
+    # Priority D: Deep Learning Model & Calibrated Probability
     else:
-        if spectral["spectral_anomaly"]:
+        if ai_prob >= 0.50:
             label = "AI-Generated"
-            confidence = round(max(85.0, min(98.5, 88.0 + (spectral["high_freq_std"] - 1.85) * 10)), 2)
-            reason = "High-frequency periodic spectral artifacts detected (typical of diffusion/GAN upsampling)."
+            confidence = round(max(55.0, ai_prob * 100), 2)
+            reason = "Deep neural network identified characteristic spatial generation patterns."
         else:
-            # Deep Learning probability threshold
-            if ai_prob >= 0.70:
-                label = "AI-Generated"
-                confidence = round(ai_prob * 100, 2)
-                reason = "Deep neural network identified characteristic spatial generation patterns."
-            else:
-                label = "Authentic"
-                confidence = round(max(75.0, (1.0 - ai_prob) * 100), 2)
-                reason = "Natural sensor pixel coherence with smooth frequency-domain distribution."
+            label = "Authentic"
+            confidence = round(max(55.0, real_prob * 100), 2)
+            reason = "Natural sensor pixel coherence with smooth frequency-domain distribution."
 
     elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
 
@@ -325,6 +350,8 @@ async def predict(file: UploadFile = File(...)):
             },
             "spectral": {
                 "high_freq_ratio": spectral["high_freq_ratio"],
+                "axis_grid_ratio": spectral.get("axis_grid_ratio", 0.0),
+                "peak_to_mean": spectral.get("peak_to_mean", 0.0),
                 "spectral_anomaly": spectral["spectral_anomaly"],
             },
             "neural_network": {

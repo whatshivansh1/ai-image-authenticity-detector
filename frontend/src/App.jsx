@@ -142,44 +142,17 @@ export default function App() {
   }
 
   async function prepareOptimizedUpload(targetFile) {
-    if (!targetFile || targetFile.size <= 1.2 * 1024 * 1024) {
+    // Preserve full fidelity for files <= 10MB.
+    // This retains PNG metadata chunks (Midjourney, DALL-E, ComfyUI, Automatic1111 prompts),
+    // raw camera EXIF headers, and uncompressed high-frequency spectral patterns.
+    if (!targetFile || targetFile.size <= 10 * 1024 * 1024) {
       return targetFile
     }
 
-    const isJpeg = targetFile.type === 'image/jpeg' || /\.jpe?g$/i.test(targetFile.name)
-    const isPng = targetFile.type === 'image/png' || /\.png$/i.test(targetFile.name)
-    const isWebp = targetFile.type === 'image/webp' || /\.webp$/i.test(targetFile.name)
-    if (!isJpeg && !isPng && !isWebp) {
-      return targetFile
-    }
-
+    // For images > 10MB, inform the user or compress to avoid 413 Payload Too Large
     try {
-      const arrayBuffer = await targetFile.arrayBuffer()
-      const bytes = new Uint8Array(arrayBuffer)
-
-      // For JPEG images, extract APP1 (EXIF / XMP) and APP2 (ICC / C2PA) markers
-      // to ensure hardware camera metadata and generator signatures are 100% retained.
-      const appSegments = []
-      if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
-        let pos = 2
-        while (pos < bytes.length - 4) {
-          if (bytes[pos] === 0xFF) {
-            const marker = bytes[pos + 1]
-            if (marker === 0xD9 || marker === 0xDA) break
-            const length = (bytes[pos + 2] << 8) | bytes[pos + 3]
-            if (marker === 0xE1 || marker === 0xE2 || marker === 0xED) {
-              appSegments.push(bytes.slice(pos, pos + 2 + length))
-            }
-            pos += 2 + length
-          } else {
-            break
-          }
-        }
-      }
-
-      // Fast hardware-accelerated canvas resize
       const imgBitmap = await createImageBitmap(targetFile)
-      const maxDim = 1280
+      const maxDim = 2048
       const w = imgBitmap.width
       const h = imgBitmap.height
       let targetW = w
@@ -197,27 +170,8 @@ export default function App() {
       const ctx = canvas.getContext('2d')
       ctx.drawImage(imgBitmap, 0, 0, targetW, targetH)
 
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.90))
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95))
       if (!blob) return targetFile
-
-      // Splice original EXIF / C2PA marker blocks into the 150KB JPEG output
-      if (appSegments.length > 0) {
-        const canvasBuf = await blob.arrayBuffer()
-        const canvasBytes = new Uint8Array(canvasBuf)
-        if (canvasBytes[0] === 0xFF && canvasBytes[1] === 0xD8) {
-          const totalAppLen = appSegments.reduce((sum, seg) => sum + seg.length, 0)
-          const combined = new Uint8Array(canvasBytes.length + totalAppLen)
-          combined.set(canvasBytes.slice(0, 2), 0)
-          let offset = 2
-          for (const seg of appSegments) {
-            combined.set(seg, offset)
-            offset += seg.length
-          }
-          combined.set(canvasBytes.slice(2), offset)
-          return new File([combined], targetFile.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' })
-        }
-      }
-
       return new File([blob], targetFile.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' })
     } catch (err) {
       console.warn('Smart upload optimization fallback to original:', err)
