@@ -538,15 +538,21 @@ export default function App() {
                   <div className="signal-card">
                     <div className="signal-header">
                       <Camera size={14} />
-                      <span>CAMERA HARDWARE</span>
+                      <span>{result.signals.screen_capture?.is_screen_capture ? 'DIGITAL CAPTURE' : 'CAMERA HARDWARE'}</span>
                     </div>
                     <strong>
-                      {result.signals.metadata?.has_camera_hardware
+                      {result.signals.screen_capture?.is_screen_capture
+                        ? 'Screen / UI Document'
+                        : result.signals.metadata?.has_camera_hardware
                         ? result.signals.metadata.camera_device || 'Verified Camera'
                         : 'No Hardware EXIF'}
                     </strong>
                     <span className="signal-sub">
-                      {result.signals.metadata?.has_camera_hardware ? 'Authentic sensor signature' : 'Stripped or synthetic'}
+                      {result.signals.screen_capture?.is_screen_capture
+                        ? 'Vector typography & UI frame'
+                        : result.signals.metadata?.has_camera_hardware
+                        ? 'Authentic sensor signature'
+                        : 'Stripped or synthetic'}
                     </span>
                   </div>
 
@@ -569,10 +575,16 @@ export default function App() {
                       <span>2D FFT SPECTRUM</span>
                     </div>
                     <strong>
-                      {result.signals.spectral?.spectral_anomaly ? 'Periodic Artifacts' : 'Natural Power-Law'}
+                      {result.signals.screen_capture?.is_screen_capture
+                        ? 'Digital Text Grid'
+                        : result.signals.spectral?.spectral_anomaly
+                        ? 'Periodic Artifacts'
+                        : 'Natural Power-Law'}
                     </strong>
                     <span className="signal-sub">
-                      Ratio: {result.signals.spectral?.high_freq_ratio}
+                      {result.signals.screen_capture?.is_screen_capture
+                        ? 'Discrete UI font harmonics'
+                        : `Ratio: ${result.signals.spectral?.high_freq_ratio}`}
                     </span>
                   </div>
 

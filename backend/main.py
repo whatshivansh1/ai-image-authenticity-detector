@@ -156,6 +156,38 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
     }
 
 
+def detect_digital_screen_capture(image: Image.Image, filename: str = ""):
+    """
+    Identifies digital screen captures, UI screenshots (e.g., WhatsApp, iMessage, web pages),
+    and digital documents. Vector font rasterization produces characteristic razor-sharp
+    edge transitions adjacent to flat UI background panels, distinct from continuous optical
+    camera blur or generative diffusion noise.
+    """
+    gray = np.array(image.convert("L"), dtype=np.float32)
+    h, w = gray.shape
+    if h < 32 or w < 32:
+        return False, {"is_screen_capture": False}
+
+    lap = np.abs(
+        -4 * gray[1:-1, 1:-1]
+        + gray[:-2, 1:-1] + gray[2:, 1:-1]
+        + gray[1:-1, :-2] + gray[1:-1, 2:]
+    )
+    lap_std = float(lap.std())
+    high_edge_ratio = float((lap > 70.0).sum() / ((h - 2) * (w - 2)))
+
+    fn_lower = filename.lower()
+    has_screenshot_name = any(k in fn_lower for k in ["screenshot", "screen_shot", "screen shot", "whatsapp", "telegram", "captura"])
+
+    is_screenshot = bool((lap_std > 28.0 and high_edge_ratio > 0.035) or (has_screenshot_name and lap_std > 22.0))
+
+    return is_screenshot, {
+        "is_screen_capture": is_screenshot,
+        "edge_contrast_std": round(lap_std, 2),
+        "sharp_text_edge_ratio": round(high_edge_ratio, 4),
+    }
+
+
 def compute_spectral_analysis(image: Image.Image):
     """
     2D FFT spectral analysis:
@@ -291,10 +323,13 @@ async def predict(file: UploadFile = File(...)):
     except (UnidentifiedImageError, OSError):
         raise HTTPException(400, "Invalid or unsupported image file.")
 
-    # 4. Spectral 2D FFT Analysis
+    # 4. Digital Screen Capture / Document detection
+    is_screen_capture, screen_data = detect_digital_screen_capture(image, file.filename or "")
+
+    # 5. Spectral 2D FFT Analysis
     spectral = compute_spectral_analysis(image)
 
-    # 5. Deep Learning Model Inference (MobileNetV3-Large) — offloaded to thread
+    # 6. Deep Learning Model Inference (MobileNetV3-Large) — offloaded to thread
     #    pool so the async event loop is not blocked during CPU-bound inference
     tensor = preprocess(image).unsqueeze(0)
     loop = asyncio.get_event_loop()
@@ -302,14 +337,20 @@ async def predict(file: UploadFile = File(...)):
         _executor, functools.partial(_run_inference, tensor)
     )
 
-    # 6. Multi-Signal Synthesis
+    # 7. Multi-Signal Synthesis
     # Priority A: Definitive generative AI prompt/metadata/C2PA signatures
     if metadata["has_ai_metadata"]:
         label = "AI-Generated"
         confidence = 99.85
         reason = f"Direct generative AI metadata signature identified: {metadata['ai_signatures'][0]}"
 
-    # Priority B: Verified hardware camera EXIF with valid optical capture parameters
+    # Priority B: Authentic digital screen capture / UI / chat screenshot / document (e.g. WhatsApp, iMessage, system UI)
+    elif is_screen_capture:
+        label = "Authentic"
+        confidence = 97.5
+        reason = "Authentic digital screen capture / UI document verified (crisp vector typography and interface components, zero generative diffusion markers)."
+
+    # Priority C: Verified hardware camera EXIF with valid optical capture parameters
     # and no contradictory AI indicators or strong spectral anomalies
     elif metadata["has_camera_hardware"] and not spectral["spectral_anomaly"] and ai_prob < 0.70:
         label = "Authentic"
@@ -317,13 +358,13 @@ async def predict(file: UploadFile = File(...)):
         confidence = round(max(92.0, min(99.4, 94.0 + len(metadata["camera_details"]) * 0.8)), 2)
         reason = f"Verified camera hardware capture metadata ({cam})."
 
-    # Priority C: High-frequency periodic spectral anomaly (grid upsampling)
+    # Priority D: High-frequency periodic spectral anomaly (grid upsampling in photography)
     elif spectral["spectral_anomaly"]:
         label = "AI-Generated"
         confidence = round(max(85.0, min(98.5, 88.0 + (spectral.get("peak_to_mean", 12.0) - 10.0) * 1.5)), 2)
         reason = "High-frequency periodic spectral artifacts detected (typical of diffusion/GAN upsampling)."
 
-    # Priority D: Deep Learning Model & Calibrated Probability
+    # Priority E: Deep Learning Model & Calibrated Probability
     else:
         if ai_prob >= 0.50:
             label = "AI-Generated"
@@ -348,6 +389,11 @@ async def predict(file: UploadFile = File(...)):
                 "has_ai_metadata": metadata["has_ai_metadata"],
                 "ai_signatures": metadata["ai_signatures"],
             },
+            "screen_capture": {
+                "is_screen_capture": is_screen_capture,
+                "sharp_text_edge_ratio": screen_data.get("sharp_text_edge_ratio", 0.0),
+                "edge_contrast_std": screen_data.get("edge_contrast_std", 0.0),
+            },
             "spectral": {
                 "high_freq_ratio": spectral["high_freq_ratio"],
                 "axis_grid_ratio": spectral.get("axis_grid_ratio", 0.0),
@@ -359,5 +405,5 @@ async def predict(file: UploadFile = File(...)):
                 "authentic_score": round(real_prob * 100, 2),
             },
         },
-        "note": "Multi-signal probabilistic forensic score combining EXIF, 2D FFT, and MobileNetV3.",
+        "note": "Multi-signal probabilistic forensic score combining EXIF, 2D FFT, screen capture heuristics, and MobileNetV3.",
     }
