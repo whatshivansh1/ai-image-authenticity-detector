@@ -253,7 +253,19 @@ def _run_inference(tensor: torch.Tensor):
     return float(probabilities[0].item()), float(probabilities[1].item())
 
 
-@app.get("/health")
+@app.api_route("/", methods=["GET", "HEAD"])
+def root():
+    return {
+        "service": "AI Image Authenticity Detector API",
+        "status": "online",
+        "version": "2.1.0",
+        "health_check": "/health",
+        "docs": "/docs",
+        "frontend": "https://ai-image-authenticity-detector-six.vercel.app",
+    }
+
+
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {
         "status": "ok",
