@@ -396,7 +396,7 @@ export default function App() {
             }
           />
           {serverStatus === 'online'
-            ? 'BACKEND ACTIVE (<300MS)'
+            ? `ACTIVE ENGINE: ${API_URL ? new URL(API_URL).hostname : 'LOCAL'}`
             : serverStatus === 'waking'
             ? 'CONNECTING / WAKING CLOUD CONTAINER...'
             : 'MULTI-SIGNAL FORENSIC ENGINE'}
