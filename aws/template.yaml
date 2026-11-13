@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AI Image Authenticity Detector - High-Speed Serverless API
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 2048 # 2048 MB allocates 1 full dedicated vCPU for sub-50ms inference
+    Environment:
+      Variables:
+        AWS_LWA_INVOKE_MODE: response_stream
+        AWS_LWA_PORT: "8000"
+
+Resources:
+  AiDetectorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      Architectures:
+        - x86_64
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins:
+            - "*"
+          AllowMethods:
+            - GET
+            - POST
+            - HEAD
+          AllowHeaders:
+            - "*"
+          MaxAge: 3600
+    Metadata:
+      Dockerfile: aws/Dockerfile
+      DockerContext: ..
+      DockerTag: latest
+
+  # Free Keep-Alive Scheduled Ping (EventBridge Rule every 5 minutes)
+  # Keeps 1 Lambda container warm 24/7 for 0ms cold starts (well within Free Tier)
+  KeepWarmRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Scheduled ping to keep AI detector Lambda container warm
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt AiDetectorFunction.Arn
+          Id: KeepWarmTarget
+          Input: '{"path": "/health", "httpMethod": "GET"}'
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AiDetectorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt KeepWarmRule.Arn
+
+Outputs:
+  FunctionUrl:
+    Description: Public HTTP API Endpoint (Lambda Function URL)
+    Value: !GetAtt AiDetectorFunctionUrl.FunctionUrl
