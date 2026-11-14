@@ -7,7 +7,11 @@ import {
 } from 'lucide-react'
 import './index.css'
 
-const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+let rawApiUrl = (import.meta.env.VITE_API_URL || '').trim()
+if (!rawApiUrl || rawApiUrl.includes('onrender.com')) {
+  rawApiUrl = 'https://ai-image-authenticity-detector-911631302063.asia-south1.run.app'
+}
+const API_URL = rawApiUrl.replace(/\/$/, '')
 
 export default function App() {
   const [file, setFile] = useState(null)

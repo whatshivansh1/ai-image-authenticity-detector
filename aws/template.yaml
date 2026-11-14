@@ -60,3 +60,4 @@ Outputs:
   FunctionUrl:
     Description: Public HTTP API Endpoint (Lambda Function URL)
     Value: !GetAtt AiDetectorFunctionUrl.FunctionUrl
+

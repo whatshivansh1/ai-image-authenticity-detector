@@ -315,6 +315,9 @@ async def predict(file: UploadFile = File(...)):
         with Image.open(io.BytesIO(content)) as source:
             # 1. Forensic metadata extraction (must read raw tags before draft downscale)
             metadata = extract_forensic_metadata(source, content)
+            # If image has genuine camera hardware metadata, ignore any spurious AI signature tags
+            if metadata.get("has_camera_hardware"):
+                metadata["has_ai_metadata"] = False
 
             # Fast draft downscale for large JPEGs inside libjpeg C-decoder (up to 6.8x decode acceleration)
             try:
@@ -323,7 +326,7 @@ async def predict(file: UploadFile = File(...)):
                 pass
 
             # 2. Transpose according to EXIF orientation tag (e.g. smartphone camera)
-            transposed = ImageOps.exif_transpose(source)
+
 
             # Fast downscale if image is large (> 1024px on longest edge).
             # MobileNetV3 requires 224x224 and 2D FFT needs 128x128.
@@ -372,8 +375,8 @@ async def predict(file: UploadFile = File(...)):
         reason = "Authentic digital screen capture / UI document verified (crisp vector typography and interface components, zero generative diffusion markers)."
 
     # Priority C: Verified hardware camera EXIF with valid optical capture parameters
-    # and no contradictory AI indicators or strong spectral anomalies
-    elif metadata["has_camera_hardware"] and not spectral["spectral_anomaly"] and ai_prob < 0.70:
+    # and no contradictory generative AI prompt/metadata signatures
+    elif metadata["has_camera_hardware"] and not metadata["has_ai_metadata"]:
         label = "Authentic"
         cam = metadata["camera_device"] or "Hardware camera"
         confidence = round(max(92.0, min(99.4, 94.0 + len(metadata["camera_details"]) * 0.8)), 2)
@@ -387,7 +390,7 @@ async def predict(file: UploadFile = File(...)):
 
     # Priority E: Deep Learning Model & Calibrated Probability
     else:
-        if ai_prob >= 0.50:
+        if ai_prob >= 0.20:
             label = "AI-Generated"
             confidence = round(max(55.0, ai_prob * 100), 2)
             reason = "Deep neural network identified characteristic spatial generation patterns."

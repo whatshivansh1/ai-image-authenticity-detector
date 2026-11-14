@@ -40,3 +40,4 @@ echo "Service URL: ${SERVICE_URL}"
 echo "Health Check: ${SERVICE_URL}/health"
 echo ""
 echo "Update your Vercel VITE_API_URL environment variable to: ${SERVICE_URL}"
+

@@ -35,3 +35,4 @@ sam deploy \
 echo ""
 echo "[✓] AWS Lambda Deployment Complete!"
 sam list stack-outputs --stack-name "${STACK_NAME}" --region "${REGION}"
+
