@@ -234,8 +234,8 @@ def compute_spectral_analysis(image: Image.Image):
     high_vals = magnitude[_HIGH_MASK]
     peak_to_mean = float(high_vals.max() / (high_vals.mean() + 1e-6)) if len(high_vals) > 0 else 0.0
 
-    # Periodic grid spikes manifest as high axis_ratio (> 1.85) or sharp peak-to-mean (> 14.0)
-    is_anomaly = bool(axis_ratio > 1.85 or peak_to_mean > 16.0 or (energy_ratio > 0.16 and peak_to_mean > 10.0))
+    # Periodic grid spikes manifest as high axis_ratio (> 2.5) or sharp peak-to-mean (> 22.0)
+    is_anomaly = bool(axis_ratio > 2.5 or peak_to_mean > 22.0 or (energy_ratio > 0.22 and peak_to_mean > 16.0))
 
     return {
         "high_freq_ratio": round(energy_ratio, 4),
@@ -326,7 +326,7 @@ async def predict(file: UploadFile = File(...)):
                 pass
 
             # 2. Transpose according to EXIF orientation tag (e.g. smartphone camera)
-
+            transposed = ImageOps.exif_transpose(source)
 
             # Fast downscale if image is large (> 1024px on longest edge).
             # MobileNetV3 requires 224x224 and 2D FFT needs 128x128.
@@ -383,7 +383,9 @@ async def predict(file: UploadFile = File(...)):
         reason = f"Verified camera hardware capture metadata ({cam})."
 
     # Priority D: High-frequency periodic spectral anomaly (grid upsampling in photography)
-    elif spectral["spectral_anomaly"]:
+    # Only trust spectral anomaly when the neural network also leans AI (ai_prob > 0.15).
+    # This prevents false positives on genuine webcam/phone photos with natural high-freq edges.
+    elif spectral["spectral_anomaly"] and ai_prob > 0.15:
         label = "AI-Generated"
         confidence = round(max(85.0, min(98.5, 88.0 + (spectral.get("peak_to_mean", 12.0) - 10.0) * 1.5)), 2)
         reason = "High-frequency periodic spectral artifacts detected (typical of diffusion/GAN upsampling)."
