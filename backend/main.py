@@ -385,7 +385,7 @@ async def predict(file: UploadFile = File(...)):
 
     # Priority C: Verified hardware camera EXIF with valid optical capture parameters
     # and no contradictory generative AI prompt/metadata signatures
-    elif metadata["has_camera_hardware"] and not metadata["has_ai_metadata"] and ai_prob < 0.85:
+    elif metadata["has_camera_hardware"] and not metadata["has_ai_metadata"]:
         label = "Authentic"
         cam = metadata["camera_device"] or "Hardware camera"
         confidence = round(max(92.0, min(99.4, 94.0 + len(metadata["camera_details"]) * 0.8)), 2)
