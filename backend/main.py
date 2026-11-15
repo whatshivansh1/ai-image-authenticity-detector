@@ -94,7 +94,7 @@ def load_model():
 model = load_model()
 
 
-def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
+def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes, filename: str = ""):
     """Inspects EXIF and image chunk metadata for camera hardware or AI generator fingerprints."""
     ai_signatures = []
     camera_data = {}
@@ -107,8 +107,16 @@ def extract_forensic_metadata(source: Image.Image, raw_bytes: bytes):
         "ideogram", "runway", "pika", "sora", "leonardo.ai", "leonardo ai",
         "recraft", "playground", "kandinsky", "foocus", "invokeai",
         "sd-metadata", "stability ai", "dreamstudio", "dreamfusion",
-        "deepfloyd", "genai", "generative ai"
+        "deepfloyd", "genai", "generative ai", "chatgpt", "chatgpt image", "dalle-3", "dall-e 3"
     ]
+
+    # 0. Filename heuristic for common AI generator downloads (e.g. "ChatGPT Image ...", "DALL-E ...")
+    if filename:
+        fn_lower = filename.lower()
+        for fn_indicator in ["chatgpt", "dall·e", "dall-e", "dalle", "midjourney", "stable diffusion", "stablediffusion", "flux.1"]:
+            if fn_indicator in fn_lower:
+                ai_signatures.append(f"Generator filename signature: {filename[:60]}")
+                break
 
     # 1. Text chunks in PNG / JPEG headers (e.g. prompt, negative prompt, A1111/ComfyUI parameters)
     if hasattr(source, "info") and source.info:
@@ -314,9 +322,9 @@ async def predict(file: UploadFile = File(...)):
     try:
         with Image.open(io.BytesIO(content)) as source:
             # 1. Forensic metadata extraction (must read raw tags before draft downscale)
-            metadata = extract_forensic_metadata(source, content)
-            # If image has genuine camera hardware metadata, ignore any spurious AI signature tags
-            if metadata.get("has_camera_hardware"):
+            metadata = extract_forensic_metadata(source, content, file.filename or "")
+            # If image has genuine camera hardware metadata and no AI signatures, clear spurious AI flags
+            if metadata.get("has_camera_hardware") and not metadata.get("ai_signatures"):
                 metadata["has_ai_metadata"] = False
 
             # Fast draft downscale for large JPEGs inside libjpeg C-decoder (up to 6.8x decode acceleration)
@@ -369,14 +377,15 @@ async def predict(file: UploadFile = File(...)):
         reason = f"Direct generative AI metadata signature identified: {metadata['ai_signatures'][0]}"
 
     # Priority B: Authentic digital screen capture / UI / chat screenshot / document (e.g. WhatsApp, iMessage, system UI)
-    elif is_screen_capture:
+    # Only if the neural network does not strongly detect synthetic diffusion patterns (ai_prob < 0.60)
+    elif is_screen_capture and ai_prob < 0.60:
         label = "Authentic"
         confidence = 97.5
         reason = "Authentic digital screen capture / UI document verified (crisp vector typography and interface components, zero generative diffusion markers)."
 
     # Priority C: Verified hardware camera EXIF with valid optical capture parameters
     # and no contradictory generative AI prompt/metadata signatures
-    elif metadata["has_camera_hardware"] and not metadata["has_ai_metadata"]:
+    elif metadata["has_camera_hardware"] and not metadata["has_ai_metadata"] and ai_prob < 0.85:
         label = "Authentic"
         cam = metadata["camera_device"] or "Hardware camera"
         confidence = round(max(92.0, min(99.4, 94.0 + len(metadata["camera_details"]) * 0.8)), 2)
@@ -392,7 +401,7 @@ async def predict(file: UploadFile = File(...)):
 
     # Priority E: Deep Learning Model & Calibrated Probability
     else:
-        if ai_prob >= 0.20:
+        if ai_prob >= 0.50:
             label = "AI-Generated"
             confidence = round(max(55.0, ai_prob * 100), 2)
             reason = "Deep neural network identified characteristic spatial generation patterns."
