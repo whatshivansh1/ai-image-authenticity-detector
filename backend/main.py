@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = ROOT / "models" / "ai_image_detector.pth"
 TRACED_MODEL_PATH = ROOT / "models" / "ai_image_detector_traced.pt"
 SAMPLES_DIR = ROOT / "backend" / "samples"
+FRONTEND_DIST = ROOT / "frontend" / "dist"
 
 app = FastAPI(
     title="AI-Generated Image Detection API",
@@ -263,6 +264,9 @@ def _run_inference(tensor: torch.Tensor):
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root():
+    index_file = FRONTEND_DIST / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
     return {
         "service": "AI Image Authenticity Detector API",
         "status": "online",
@@ -271,6 +275,20 @@ def root():
         "docs": "/docs",
         "frontend": "https://ai-image-authenticity-detector-six.vercel.app",
     }
+
+
+@app.get("/favicon.svg")
+def favicon():
+    fav = FRONTEND_DIST / "favicon.svg"
+    if fav.exists():
+        return FileResponse(fav)
+    raise HTTPException(404, "Favicon not found")
+
+
+# Mount frontend compiled assets (/assets/...)
+if (FRONTEND_DIST / "assets").exists():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="static_assets")
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])

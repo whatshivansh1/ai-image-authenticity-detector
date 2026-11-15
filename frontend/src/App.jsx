@@ -8,7 +8,9 @@ import {
 import './index.css'
 
 let rawApiUrl = (import.meta.env.VITE_API_URL || '').trim()
-if (!rawApiUrl || rawApiUrl.includes('onrender.com')) {
+if (typeof window !== 'undefined' && window.location.hostname.includes('run.app')) {
+  rawApiUrl = window.location.origin
+} else if (!rawApiUrl || rawApiUrl.includes('onrender.com')) {
   rawApiUrl = 'https://ai-image-authenticity-detector-911631302063.asia-south1.run.app'
 }
 const API_URL = rawApiUrl.replace(/\/$/, '')
